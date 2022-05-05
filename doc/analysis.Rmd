@@ -20,7 +20,7 @@ okabe_ito_palette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#
 
 ```{r libraries, echo=FALSE}
 suppressPackageStartupMessages({
-  source("../packages.R")
+  source("../packages.R") 
 })
 ```
 
@@ -32,7 +32,7 @@ Collaborators: Paul Birch, Haixia Wang
 
 ### Load all data
 
-Read data from Excel files.
+Read all paired data from Excel files.
 
 ```{r read_data}
 sets <- tribble(
@@ -67,7 +67,7 @@ dat <- map2_dfr(sets$set, sets$file, function(set, file) {
 })
 ```
 
-This is what our data look like (first 5 and last 5 rows):
+This is what our combined data look like (first 5 and last 5 rows):
 
 ```{r show_data}
 bind_rows(head(dat, 5), tail(dat, 5)) %>% 
@@ -75,7 +75,7 @@ bind_rows(head(dat, 5), tail(dat, 5)) %>%
   hline(i = 5)
 ```
 
-Make an overview plot:
+Make an overview plot. Lines join pairs, colours indicate increase or decrease upont treatment.
 
 ```{r overview_plot, fig.width=6, fig.height=4}
 pl <- dat %>%
@@ -92,7 +92,8 @@ pl <- dat %>%
       geom_point() +
       geom_point(aes(x = condition_2, y = value_2)) +
       scale_colour_manual(values = c("#E69F00", "grey80", "#56B4E9")) +
-      facet_wrap(~ experiment, ncol = 4)
+      facet_wrap(~ experiment, ncol = 4) +
+      labs(x = "Condition", y = "Value")
   }) %>% 
   set_names(levels(dat$set))
 ```
@@ -123,7 +124,7 @@ pl$hpNbPP1c
 
 ### Paried differences
 
-Let's make a plot of paried differences:
+Now we can look at differences for each pair between the two conditions in one combined plot.
 
 ```{r dif_plot_plot, fig.width=7, fig.height=6}
 dat %>% 
@@ -138,7 +139,7 @@ dat %>%
 
 ### ANOVA
 
-Now we can test if there are significant differences between experiments. I perform ANOVA on each set separately (a bit of convoluted R code, sorry for that):
+The pair difference data are set up in a convenient way to perform ANOVA analysis. We do ANOVA for each set separately. The null hypothesis is that the means from all experiments are equal. I used some advanced R here, but this is only a wrapper to do the test and tidy up data for all sets in one go. At the centre of this are just two R commands: `lm` to create a linear model and `anova` to perform ANOVA.
 
 ```{r anova}
 dat %>%
@@ -153,13 +154,13 @@ dat %>%
   bg(i = ~ p.value < 0.05, bg = "wheat")
 ```
 
-The last two sets have p-value < 0.05, so aggregated results might not be correct.
+The last two sets have p-value < 0.05, which means we can reject the null hypothesis about equality of means - there are real differences between the experiments and we should not be using aggregated data. Note: this depends on how strict we are. If we use a 0.01 limit for p-value, then all data can be aggregated.
 
 ### t-test
 
-We are going to perform a paired t-test for each set and experiment separately. This corresponds to a one-sample t-test against zeroes, calculated from differences.
+We are going to perform a paired t-test for each set and experiment separately. This corresponds to a one-sample t-test of differences against zeroes.
 
-#### Per experiment
+First, define functions to make per experiment and aggregated tests, which can be used both with t-test and Wilcoxon test:
 
 ```{r fun_test}
 per_exp_test <- function(d, FUN) {
@@ -185,6 +186,10 @@ aggr_test <- function(d, FUN) {
 }
 ```
 
+#### Per experiment
+
+Paired t-test done on each experiment separately. I find Benjamini-Hochberg adjusted p-values within each set (we treat data sets as completely independent). Statistically significant results are highlighted.
+
 ```{r t_per_experiment}
 per_exp_test(dat, t.test) %>% 
   mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
@@ -194,18 +199,16 @@ per_exp_test(dat, t.test) %>%
   bg(i = ~ p.adj < 0.05, bg = "wheat", j = 2:9)
 ```
 
-
 #### Aggregated
+
+Paired t-test done on aggregated experiments within each set.
 
 ```{r t_aggregated}
 aggr_test(dat, t.test) %>% 
   mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
   flextable() %>% 
   theme_box() %>% 
-  set_formatter(
-    p.value = \(x) sprintf("%2.1e", x),
-    p.adj = \(x) sprintf("%2.1e", x)
-  )
+  set_formatter(p.value = \(x) sprintf("%2.1e", x))
 ```
 
 As expected, using aggregated data improves power of the experiment and we have a significant result.
@@ -253,16 +256,17 @@ dat_un <- read_excel("../data/non-Paired hpCHC 04314 intensity_curated.xlsx") %>
     pivot_longer(-experiment, names_to = "condition") %>% 
     mutate(experiment = as_factor(experiment)) %>% 
     group_by(experiment, condition) %>% 
-    mutate(replicate = 1:n(), .after = experiment) %>% 
-    ungroup()
+    mutate(n_rep = n(), replicate = 1:n_rep) %>% 
+    ungroup() %>% 
+    drop_na()
 ```
 
-This is what our data look like (first 10 rows):
+This is what our data look like (first and last 5 rows):
 
 ```{r show_data_unpaired}
-dat_un %>% 
-  head(10) %>% 
-  flextable()
+bind_rows(head(dat_un, 5), tail(dat_un, 5)) %>% 
+  flextable() %>% 
+  hline(i = 5)
 ```
 
 Make an overview plot:
@@ -275,14 +279,41 @@ dat_un %>%
   facet_wrap(~ experiment, ncol = 7)
 ```
 
+### Normality
+
+We have enough data to look at normality in each experiment/condition. The Anderson-Darling test we use requires more than 7 replicates.
+
+```{r normality_un}
+dat_un %>%
+  filter(n_rep > 7) %>% 
+  select(experiment, condition, value) %>%
+  nest(data = value) %>%
+  mutate(fit = map(data, ~ ad.test(.x$value) %>% tidy())) %>%
+  unnest(fit) %>%
+  select(experiment, condition, stat = statistic, p.value) %>%
+  mutate(across(c(stat, p.value), ~signif(.x, 3))) %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  merge_v(j = 1) %>% 
+  bg(i = ~ p.value < 0.05, bg = "wheat", j = 2:4)
+```
+
+Formally, three experiment/conditions are non-normal. However, we are going to do a t-test and a non-parametric test as well to confirm results.
+
 ### ANOVA
+
+This is a two-way ANOVA, looking at the effects of experiment and condition.
 
 ```{r anova_unpaired}
 fit <- lm(value ~ experiment + condition, data = dat_un)
 anova(fit)
 ```
 
-### t-test
+Both are significant, hence we should not be aggregating data.
+
+### Statistical tests
+
+Again, we define a helper function to perform a test.
 
 ```{r un_test_fun}
 per_exp_test_un <- function(d, FUN) {
@@ -295,6 +326,9 @@ per_exp_test_un <- function(d, FUN) {
 } 
 ```
 
+#### t-test
+
+t-test between the conditions performed for each experiment separately.
 
 ```{r t_per_exp_unparied}
 per_exp_test_un(dat_un, t.test) %>% 
@@ -305,7 +339,11 @@ per_exp_test_un(dat_un, t.test) %>%
   bg(i = ~ p.value < 0.05, bg = "wheat")
 ```
 
+Only experiments 4 and 5 show a significant difference. This doesn't mean that there is no difference in other experiments - we simply don't have enough evidence.
+
 ### Non-parametric test
+
+Mann-Whitney test.
 
 ```{r wilcox_per_exp_unparied}
 per_exp_test_un(dat_un, wilcox.test) %>% 
