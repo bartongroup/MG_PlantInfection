@@ -1,0 +1,316 @@
+---
+title: "Plant infection"
+author: "Marek Gierlinski"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    theme:
+      bootswatch: journal
+      primary: "#2fa4e7"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, autodep = TRUE, warning = FALSE)
+okabe_ito_palette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "grey80", "grey30", "black")
+```
+
+
+```{r libraries, echo=FALSE}
+suppressPackageStartupMessages({
+  source("../packages.R")
+})
+```
+
+#  {.tabset}
+
+## Paired sets
+
+### Load all data
+
+Read data from Excel files.
+
+```{r read_data}
+sets <- tribble(
+  ~set, ~file,
+  "hpNbAra6", "HaixiaWang",
+  "hpCHC_ATTA", "Paired- hpCHC 04314 percentage",
+  "hpCHC", "Paired- hpCHC ATTA",
+  "hpNbPP1c", "Paired- hpNbPP1c ATTA"
+) %>% 
+  mutate(file = str_glue("../data/{file}_curated.xlsx"))
+
+dat <- map2_dfr(sets$set, sets$file, function(set, file) {
+  read_excel(file) %>%
+    pivot_longer(-experiment, names_to = "condition") %>% 
+    add_column(set = set, .before = 1) %>% 
+    mutate(across(c(experiment, set), as_factor)) %>% 
+    group_by(set, experiment, condition) %>%
+    mutate(
+      n_rep = n(),
+      replicate = 1:n_rep
+    ) %>% 
+    ungroup() %>% 
+    group_by(set) %>% 
+    mutate(
+      group = condition %>% 
+        as_factor() %>%
+        as.integer()
+    ) %>% 
+    ungroup() %>% 
+    pivot_wider(id_cols = c(set, experiment, replicate, n_rep), names_from = group, values_from = c(condition, value)) %>% 
+    mutate(dif = value_2 - value_1)
+})
+```
+
+This is what our data look like (first 5 and last 5 rows):
+
+```{r show_data}
+bind_rows(head(dat, 5), tail(dat, 5)) %>% 
+  flextable() %>% 
+  hline(i = 5)
+```
+
+Make an overview plot:
+
+```{r overview_plot, fig.width=6, fig.height=4}
+pl <- dat %>%
+  arrange(set, experiment) %>% 
+  group_split(set) %>% 
+  map(function(d) {
+    ggplot(d, aes(x = condition_1, xend = condition_2, y = value_1, yend = value_2)) +
+      theme_bw() +
+      theme(
+        panel.grid = element_blank(),
+        legend.position = "none"
+      ) +
+      geom_segment(aes(colour = as.factor(sign(dif))), alpha = 0.3) +
+      geom_point() +
+      geom_point(aes(x = condition_2, y = value_2)) +
+      scale_colour_manual(values = c("#E69F00", "grey80", "#56B4E9")) +
+      facet_wrap(~ experiment, ncol = 4)
+  }) %>% 
+  set_names(levels(dat$set))
+```
+
+### hpNbAra6
+
+```{r plot_hpNbAra6}
+pl$hpNbAra6
+```
+
+### hpCHC_ATTA
+
+```{r plot_hpCHC_ATTA}
+pl$hpCHC_ATTA
+```
+
+### hpCHC
+
+```{r plot_hpCHC}
+pl$hpCHC
+```
+
+### hpNbPP1c
+
+```{r plot_hpNbPP1c}
+pl$hpNbPP1c
+```
+
+### Paried differences
+
+Let's make a plot of paried differences:
+
+```{r dif_plot_plot, fig.width=7, fig.height=6}
+dat %>% 
+  ggplot(aes(x = experiment, y = dif)) +
+  theme_bw() +
+  theme(panel.grid = element_blank()) +
+  geom_hline(yintercept = 0, colour = "grey70") +
+  geom_beeswarm(size = 1.6, cex = 1.5) +
+  facet_wrap(~ set, scales = "free") +
+  labs(x = "Experiment", y = "log2 ratio")
+```
+
+### ANOVA
+
+Now we can test if there are significant differences between experiments. I perform ANOVA on each set separately (a bit of convoluted R code, sorry for that):
+
+```{r anova}
+dat %>%
+  select(set, experiment, dif) %>%
+  nest(data = c(experiment, dif)) %>%
+  mutate(fit = map(data, ~ lm(dif ~ experiment, data = .x) %>% anova() %>% tidy())) %>%
+  unnest(fit) %>%
+  filter(term == "experiment") %>%
+  select(set, df, sumsq, meansq, statistic, p.value) %>%
+  mutate(across(where(is.numeric), ~ signif(.x, 2))) %>%
+  flextable() %>%
+  bg(i = ~ p.value < 0.05, bg = "wheat")
+```
+
+The last two sets have p-value < 0.05, so aggregated results might not be correct.
+
+### t-test
+
+We are going to perform a paired t-test for each set and experiment separately. This corresponds to a one-sample t-test against zeroes, calculated from differences.
+
+#### Per experiment
+
+```{r fun_test}
+per_exp_test <- function(d, FUN) {
+  d %>%
+    filter(n_rep > 2) %>%
+    select(set, experiment, value_1, value_2, n_rep) %>%
+    nest(data = c(value_1, value_2)) %>%
+    mutate(fit = map(data, ~ FUN(.x$value_1, .x$value_2, paired = TRUE, conf.int = TRUE) %>% tidy())) %>%
+    unnest(fit) %>%
+    group_by(set) %>%
+    mutate(p.adj = p.adjust(p.value, method = "BH")) %>%
+    ungroup() %>%
+    select(set, experiment, n_rep, mean_dif = estimate, conf.low, conf.high, stat = statistic, p.value, p.adj)
+}
+
+aggr_test <- function(d, FUN) {
+  d %>%
+    select(set, value_1, value_2) %>%
+    nest(data = c(value_1, value_2)) %>%
+    mutate(fit = map(data, ~ FUN(.x$value_1, .x$value_2, paired = TRUE, conf.int = TRUE) %>% tidy())) %>%
+    unnest(fit) %>%
+    select(set,  mean_dif = estimate, conf.low, conf.high, stat = statistic, p.value)
+}
+```
+
+```{r t_per_experiment}
+per_exp_test(dat, t.test) %>% 
+  mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  merge_v(j = 1) %>% 
+  bg(i = ~ p.adj < 0.05, bg = "wheat", j = 2:9)
+```
+
+
+#### Aggregated
+
+```{r t_aggregated}
+aggr_test(dat, t.test) %>% 
+  mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  set_formatter(
+    p.value = \(x) sprintf("%2.1e", x),
+    p.adj = \(x) sprintf("%2.1e", x)
+  )
+```
+
+As expected, using aggregated data improves power of the experiment and we have a significant result.
+
+### Non-parametric test
+
+If we are worried about data distribution, we can perform a non-parametric Mann-Whitney test (also known as Wilcoxon rank sum test).
+
+#### Per experiment
+
+```{r wilcox_per_experiment, warning=FALSE}
+per_exp_test(dat, wilcox.test) %>% 
+  mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  merge_v(j = 1) %>% 
+  bg(i = ~ p.adj < 0.05, bg = "wheat", j = 2:9)
+```
+
+
+#### Aggregated
+
+```{r wilcox_aggregated, warning=FALSE}
+aggr_test(dat, wilcox.test) %>% 
+  mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  set_formatter(
+    p.value = \(x) sprintf("%2.1e", x),
+    p.adj = \(x) sprintf("%2.1e", x)
+  )
+```
+
+
+
+
+## Unpaired set
+
+### Quick look at data
+
+Read data from Excel files.
+
+```{r read_data_unpaired}
+dat_un <- read_excel("../data/non-Paired hpCHC 04314 intensity_curated.xlsx") %>%
+    pivot_longer(-experiment, names_to = "condition") %>% 
+    mutate(experiment = as_factor(experiment)) %>% 
+    group_by(experiment, condition) %>% 
+    mutate(replicate = 1:n(), .after = experiment) %>% 
+    ungroup()
+```
+
+This is what our data look like (first 10 rows):
+
+```{r show_data_unpaired}
+dat_un %>% 
+  head(10) %>% 
+  flextable()
+```
+
+Make an overview plot:
+
+```{r overview_plot_unpaired, fig.width=10, fig.height=4}
+dat_un %>%
+  ggplot(aes(x =  condition, y = value)) +
+  theme_bw() +
+  geom_beeswarm(size = 1.6, cex = 4, groupOnX = TRUE) +
+  facet_wrap(~ experiment, ncol = 7)
+```
+
+### ANOVA
+
+```{r anova_unpaired}
+fit <- lm(value ~ experiment + condition, data = dat_un)
+anova(fit)
+```
+
+### t-test
+
+```{r un_test_fun}
+per_exp_test_un <- function(d, FUN) {
+  d %>%
+    select(experiment, condition, value) %>%
+    nest(data = c(condition, value)) %>%
+    mutate(fit = map(data, ~ FUN(value ~ condition, data = .x, paired = FALSE, conf.int = TRUE) %>% tidy())) %>%
+    unnest(fit) %>%
+    select(experiment, mean_dif = estimate, conf.low, conf.high, stat = statistic, p.value)
+} 
+```
+
+
+```{r t_per_exp_unparied}
+per_exp_test_un(dat_un, t.test) %>% 
+    mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  merge_v(j = 1) %>% 
+  bg(i = ~ p.value < 0.05, bg = "wheat")
+```
+
+### Non-parametric test
+
+```{r wilcox_per_exp_unparied}
+per_exp_test_un(dat_un, wilcox.test) %>% 
+    mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  merge_v(j = 1) %>% 
+  bg(i = ~ p.value < 0.05, bg = "wheat")
+```
+
