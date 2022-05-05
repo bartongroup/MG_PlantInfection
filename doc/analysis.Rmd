@@ -271,7 +271,7 @@ Make an overview plot:
 dat_un %>%
   ggplot(aes(x =  condition, y = value)) +
   theme_bw() +
-  geom_beeswarm(size = 1.6, cex = 4, groupOnX = TRUE) +
+  geom_quasirandom(width = 0.1) +
   facet_wrap(~ experiment, ncol = 7)
 ```
 
