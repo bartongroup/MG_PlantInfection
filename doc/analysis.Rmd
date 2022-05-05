@@ -1,5 +1,5 @@
 ---
-title: "Plant infection"
+title: "How are Phytophthora effectors taken into plant cells?"
 author: "Marek Gierlinski"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
@@ -23,6 +23,8 @@ suppressPackageStartupMessages({
   source("../packages.R")
 })
 ```
+
+Collaborators: Paul Birch, Haixia Wang
 
 #  {.tabset}
 
