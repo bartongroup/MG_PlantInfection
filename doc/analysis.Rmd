@@ -126,16 +126,7 @@ pl$hpNbPP1c
 
 Now we can look at differences for each pair between the two conditions in one combined plot.
 
-```{r dif_plot_plot, fig.width=7, fig.height=6}
-dat %>% 
-  ggplot(aes(x = experiment, y = dif)) +
-  theme_bw() +
-  theme(panel.grid = element_blank()) +
-  geom_hline(yintercept = 0, colour = "grey70") +
-  geom_beeswarm(size = 1.6, cex = 1.5) +
-  facet_wrap(~ set, scales = "free") +
-  labs(x = "Experiment", y = "log2 ratio")
-```
+PLOT MOVED DOWN TO INCLUDE SIGNIFICANCE DATA
 
 ### ANOVA
 
@@ -168,7 +159,7 @@ per_exp_test <- function(d, FUN) {
     filter(n_rep > 2) %>%
     select(set, experiment, value_1, value_2, n_rep) %>%
     nest(data = c(value_1, value_2)) %>%
-    mutate(fit = map(data, ~ FUN(.x$value_1, .x$value_2, paired = TRUE, conf.int = TRUE) %>% tidy())) %>%
+    mutate(fit = map(data, ~ FUN(.x$value_2, .x$value_1, paired = TRUE, conf.int = TRUE) %>% tidy())) %>%
     unnest(fit) %>%
     group_by(set) %>%
     mutate(p.adj = p.adjust(p.value, method = "BH")) %>%
@@ -180,7 +171,7 @@ aggr_test <- function(d, FUN) {
   d %>%
     select(set, value_1, value_2) %>%
     nest(data = c(value_1, value_2)) %>%
-    mutate(fit = map(data, ~ FUN(.x$value_1, .x$value_2, paired = TRUE, conf.int = TRUE) %>% tidy())) %>%
+    mutate(fit = map(data, ~ FUN(.x$value_2, .x$value_1, paired = TRUE, conf.int = TRUE) %>% tidy())) %>%
     unnest(fit) %>%
     select(set,  mean_dif = estimate, conf.low, conf.high, stat = statistic, p.value)
 }
@@ -191,12 +182,37 @@ aggr_test <- function(d, FUN) {
 Paired t-test done on each experiment separately. I find Benjamini-Hochberg adjusted p-values within each set (we treat data sets as completely independent). Statistically significant results are highlighted.
 
 ```{r t_per_experiment}
-per_exp_test(dat, t.test) %>% 
+test_result <- per_exp_test(dat, t.test) 
+test_result %>% 
   mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
   flextable() %>% 
   theme_box() %>% 
   merge_v(j = 1) %>% 
   bg(i = ~ p.adj < 0.05, bg = "wheat", j = 2:9)
+```
+
+
+The plot below shows differences between the knock-out and control (grey points) the mean (horizontal lines) and 95% confidence intervals (vertical lines) for each experiment in each set. Where the 95% CI does not overlap with the null hypothesis line (zero - horizontal grey dotted line) the result is statistically significant at 0.05 level.
+
+```{r dif_plot_plot, fig.width=7, fig.height=6}
+dat_mean <- dat %>% 
+  group_by(set, experiment) %>% 
+  summarise(mean_dif = mean(dif))
+
+g <- ggplot(dat) +
+  theme_bw() +
+  theme(panel.grid = element_blank()) +
+  geom_hline(yintercept = 0, colour = "grey70", linetype = "dotted") +
+  geom_beeswarm(aes(x = experiment, y = dif), size = 1.6, cex = 1.6, colour = "grey60") +
+  # use errorbar to create a horizontal bar
+  geom_errorbar(data = dat_mean, aes(x = experiment, ymin = mean_dif, ymax = mean_dif),
+                colour = "black", width = 0.4, size = 1.05) +
+  geom_segment(data = test_result, aes(x = experiment, xend = experiment, y = conf.low, yend = conf.high),
+               colour = "black", size = 1.05) +
+  facet_wrap(~ set, scales = "free") +
+  labs(x = "Experiment", y = "Difference")
+g
+ggsave("fig_1.pdf", g, device = "pdf", width = 6, height = 6)
 ```
 
 #### Aggregated
