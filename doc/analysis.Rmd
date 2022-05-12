@@ -268,13 +268,27 @@ aggr_test(dat, wilcox.test) %>%
 Read data from Excel files.
 
 ```{r read_data_unpaired}
-dat_un <- read_excel("../data/non-Paired hpCHC 04314 intensity_curated.xlsx") %>%
+sets_un <- tribble(
+  ~set, ~file,
+  "hpCHC", "nonpaired hpCHC 04314",
+  "NbAra6-GFP-P30", "nonpaired NbAra6-GFP P30",
+  "NbAra6-GFP-P100", "nonpaired NbAra6-GFP P100",
+  "NbCLC-GFP-P30", "nonpaired NbCLC-GFP P30",
+  "NbCLC-GFP-P100", "nonpaired NbCLC-GFP P100"
+) %>% 
+  mutate(file = str_glue("../data/{file}.xlsx"))
+
+dat_un <- map2_dfr(sets_un$set, sets_un$file, function(set, file) {
+  read_excel(file) %>%
     pivot_longer(-experiment, names_to = "condition") %>% 
     mutate(experiment = as_factor(experiment)) %>% 
     group_by(experiment, condition) %>% 
     mutate(n_rep = n(), replicate = 1:n_rep) %>% 
     ungroup() %>% 
-    drop_na()
+    drop_na() %>% 
+    add_column(set = set, .before = 1)
+}) %>% 
+  mutate(set = as_factor(set))
 ```
 
 This is what our data look like (first and last 5 rows):
@@ -282,18 +296,57 @@ This is what our data look like (first and last 5 rows):
 ```{r show_data_unpaired}
 bind_rows(head(dat_un, 5), tail(dat_un, 5)) %>% 
   flextable() %>% 
-  hline(i = 5)
+  hline(i = 5) %>% 
+  width(j = 1, width = 2)
 ```
 
-Make an overview plot:
+Make an overview plots:
 
 ```{r overview_plot_unpaired, fig.width=10, fig.height=4}
-dat_un %>%
-  ggplot(aes(x =  condition, y = value)) +
-  theme_bw() +
-  geom_quasirandom(width = 0.1) +
-  facet_wrap(~ experiment, ncol = 7)
+pl <- dat_un %>%
+  arrange(set, experiment) %>% 
+  group_split(set) %>% 
+  map(function(d) {
+    ggplot(d, aes(x =  condition, y = value)) +
+    theme_bw() +
+    geom_quasirandom(width = 0.1) +
+    facet_wrap(~ experiment, ncol = 7)
+  }) %>% 
+  set_names(levels(dat_un$set))
 ```
+
+### hpCHC
+
+```{r fig_un_hpCHC, fig.width=10, fig.height=4}
+pl$hpCHC
+```
+
+### NbAra6-GFP-P30
+
+```{r fig_un_NbAra6-GFP-P30, fig.width=4, fig.height=4}
+pl$`NbAra6-GFP-P30`
+```
+
+### NbAra6-GFP-P100
+
+```{r fig_un_NbAra6-GFP-P100, fig.width=4, fig.height=4}
+pl$`NbAra6-GFP-P100`
+```
+
+
+### NbCLC-GFP-P30
+
+```{r fig_un_NbCLC-GFP-P30, fig.width=4, fig.height=4}
+pl$`NbCLC-GFP-P30`
+```
+
+### NbCLC-GFP-P100
+
+```{r fig_un_NbCLC-GFP-P100, fig.width=4, fig.height=4}
+pl$`NbCLC-GFP-P100`
+```
+
+
 
 ### Normality
 
@@ -302,16 +355,17 @@ We have enough data to look at normality in each experiment/condition. The Ander
 ```{r normality_un}
 dat_un %>%
   filter(n_rep > 7) %>% 
-  select(experiment, condition, value) %>%
+  select(set, experiment, condition, value) %>%
   nest(data = value) %>%
   mutate(fit = map(data, ~ ad.test(.x$value) %>% tidy())) %>%
   unnest(fit) %>%
-  select(experiment, condition, stat = statistic, p.value) %>%
+  select(set, experiment, condition, stat = statistic, p.value) %>%
   mutate(across(c(stat, p.value), ~signif(.x, 3))) %>% 
   flextable() %>% 
   theme_box() %>% 
   merge_v(j = 1) %>% 
-  bg(i = ~ p.value < 0.05, bg = "wheat", j = 2:4)
+  bg(i = ~ p.value < 0.05, bg = "wheat", j = 2:4) %>% 
+  width(j = 1, width = 2)
 ```
 
 Formally, three experiment/conditions are non-normal. However, we are going to do a t-test and a non-parametric test as well to confirm results.
@@ -321,52 +375,124 @@ Formally, three experiment/conditions are non-normal. However, we are going to d
 This is a two-way ANOVA, looking at the effects of experiment and condition.
 
 ```{r anova_unpaired}
-fit <- lm(value ~ experiment + condition, data = dat_un)
-anova(fit)
+dat_un %>%
+  select(set, experiment, condition, value) %>%
+  nest(data = c(experiment, condition, value)) %>%
+  mutate(fit = map(data, ~ lm(value ~ experiment + condition, data = .x) %>% anova() %>% tidy())) %>%
+  unnest(fit) %>%
+  filter(term != "Residuals") %>%
+  select(set, term, df, sumsq, meansq, statistic, p.value) %>%
+  mutate(across(where(is.numeric), ~ signif(.x, 3))) %>%
+  flextable() %>%
+  bg(i = ~ p.value < 0.05, bg = "wheat") %>% 
+  width(j = 1, width = 2) %>% 
+  set_formatter(
+    p.value = \(x) sprintf("%2.1e", x)
+  )
 ```
 
-Both are significant, hence we should not be aggregating data.
+First two sets have significant "experiment" term, that is, we detect significant differences between experiments. These, perhaps, should not be aggregated.
+
 
 ### Statistical tests
+
+Below, I perform all tests, both aggregated and per experiment for all data - as this is simpler to do in my code. I suggest that per experiment tests are more robust.
+
 
 Again, we define a helper function to perform a test.
 
 ```{r un_test_fun}
 per_exp_test_un <- function(d, FUN) {
   d %>%
-    select(experiment, condition, value) %>%
+    select(set, experiment, condition, value) %>%
     nest(data = c(condition, value)) %>%
     mutate(fit = map(data, ~ FUN(value ~ condition, data = .x, paired = FALSE, conf.int = TRUE) %>% tidy())) %>%
     unnest(fit) %>%
-    select(experiment, mean_dif = estimate, conf.low, conf.high, stat = statistic, p.value)
-} 
+    group_by(set) %>%
+    mutate(p.adj = p.adjust(p.value, method = "BH")) %>%
+    ungroup() %>%
+    select(set, experiment, mean_dif = estimate, conf.low, conf.high, stat = statistic, p.value, p.adj)
+}
+
+aggr_test_un <- function(d, FUN) {
+  d %>%
+    select(set, condition, value) %>%
+    nest(data = c(condition, value)) %>%
+    mutate(fit = map(data, ~ FUN(value ~ condition, data = .x, paired = FALSE, conf.int = TRUE) %>% tidy())) %>%
+    unnest(fit) %>%
+    select(set,  W = estimate, conf.low, conf.high, stat = statistic, p.value)
+}
 ```
 
 #### t-test
 
-t-test between the conditions performed for each experiment separately.
+##### Per experiment
 
 ```{r t_per_exp_unparied}
-per_exp_test_un(dat_un, t.test) %>% 
-    mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
+un_t_test <- per_exp_test_un(dat_un, t.test)
+un_t_test %>% 
+  mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
   flextable() %>% 
   theme_box() %>% 
   merge_v(j = 1) %>% 
-  bg(i = ~ p.value < 0.05, bg = "wheat")
+  bg(i = ~ p.adj < 0.05, bg = "wheat") %>% 
+  width(j = 1, width = 2) %>% 
+  set_formatter(
+    p.value = \(x) sprintf("%2.1e", x),
+    p.adj = \(x) sprintf("%2.1e", x)
+  )
 ```
 
-Only experiments 4 and 5 show a significant difference. This doesn't mean that there is no difference in other experiments - we simply don't have enough evidence.
+Last time I forgot to correct for multiple tests in hpCHC. If adjusted p-values are used, there are no significant differences at 0.05 FDR level.
+
+We can visualise test results in this figure. It shows the difference between means in the two conditions and 95% confidence intervals.
+
+```{r dif_plot_plot_un, fig.width=7, fig.height=6}
+g <- ggplot(un_t_test) +
+  theme_bw() +
+  theme(panel.grid = element_blank()) +
+  geom_hline(yintercept = 0, colour = "grey70", linetype = "dotted") +
+  geom_errorbar(aes(x = experiment, ymin = conf.low, ymax = conf.high),
+                colour = "black", width = 0.4) +
+  geom_point(aes(x = experiment, y = mean_dif)) +
+  facet_wrap(~ set, scales = "free") +
+  labs(x = "Experiment", y = "Difference between means (treatment - control)")
+g
+ggsave("fig_2.pdf", g, device = "pdf", width = 6, height = 6)
+```
+
 
 ### Non-parametric test
 
-Mann-Whitney test.
+##### Per experiment
 
 ```{r wilcox_per_exp_unparied}
 per_exp_test_un(dat_un, wilcox.test) %>% 
-    mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
+  mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
   flextable() %>% 
   theme_box() %>% 
   merge_v(j = 1) %>% 
-  bg(i = ~ p.value < 0.05, bg = "wheat")
+  bg(i = ~ p.adj < 0.05, bg = "wheat") %>% 
+  width(j = 1, width = 2) %>% 
+  set_formatter(
+    p.value = \(x) sprintf("%2.1e", x),
+    p.adj = \(x) sprintf("%2.1e", x)
+  )
 ```
+
+
+#### Aggregated
+
+```{r wilcox_aggregated_un, warning=FALSE}
+aggr_test_un(dat_un, wilcox.test) %>% 
+  mutate(across(where(is.numeric), ~signif(.x, 3))) %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  width(j = 1, width = 2) %>% 
+  set_formatter(
+    p.value = \(x) sprintf("%2.1e", x),
+    p.adj = \(x) sprintf("%2.1e", x)
+  )
+```
+
 
