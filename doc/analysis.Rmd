@@ -411,7 +411,7 @@ per_exp_test_un <- function(d, FUN) {
     group_by(set) %>%
     mutate(p.adj = p.adjust(p.value, method = "BH")) %>%
     ungroup() %>%
-    select(set, experiment, mean_dif = estimate, conf.low, conf.high, stat = statistic, p.value, p.adj)
+    select(set, experiment, estimate, conf.low, conf.high, stat = statistic, p.value, p.adj)
 }
 
 aggr_test_un <- function(d, FUN) {
@@ -420,7 +420,7 @@ aggr_test_un <- function(d, FUN) {
     nest(data = c(condition, value)) %>%
     mutate(fit = map(data, ~ FUN(value ~ condition, data = .x, paired = FALSE, conf.int = TRUE) %>% tidy())) %>%
     unnest(fit) %>%
-    select(set,  W = estimate, conf.low, conf.high, stat = statistic, p.value)
+    select(set,  estimate, conf.low, conf.high, stat = statistic, p.value)
 }
 ```
 
@@ -454,7 +454,7 @@ g <- ggplot(un_t_test) +
   geom_hline(yintercept = 0, colour = "grey70", linetype = "dotted") +
   geom_errorbar(aes(x = experiment, ymin = conf.low, ymax = conf.high),
                 colour = "black", width = 0.4) +
-  geom_point(aes(x = experiment, y = mean_dif)) +
+  geom_point(aes(x = experiment, y = estimate)) +
   facet_wrap(~ set, scales = "free") +
   labs(x = "Experiment", y = "Difference between means (treatment - control)")
 g
