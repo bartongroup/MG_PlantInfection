@@ -38,7 +38,7 @@ Read all paired data from Excel files.
 sets <- tribble(
   ~set, ~file,
   "hpNbAra6", "HaixiaWang",
-  "hpCHC_ATTA", "Paired- hpCHC 04314 percentage",
+  "hpCHC_perc", "Paired- hpCHC 04314 percentage",
   "hpCHC", "Paired- hpCHC ATTA",
   "hpNbPP1c", "Paired- hpNbPP1c ATTA"
 ) %>% 
@@ -104,16 +104,16 @@ pl <- dat %>%
 pl$hpNbAra6
 ```
 
-### hpCHC_ATTA
-
-```{r plot_hpCHC_ATTA}
-pl$hpCHC_ATTA
-```
-
 ### hpCHC
 
 ```{r plot_hpCHC}
 pl$hpCHC
+```
+
+### hpCHC percentage
+
+```{r plot_hpCHC_perc}
+pl$hpCHC_perc
 ```
 
 ### hpNbPP1c
@@ -171,9 +171,13 @@ aggr_test <- function(d, FUN) {
   d %>%
     select(set, value_1, value_2) %>%
     nest(data = c(value_1, value_2)) %>%
-    mutate(fit = map(data, ~ FUN(.x$value_2, .x$value_1, paired = TRUE, conf.int = TRUE) %>% tidy())) %>%
+    mutate(fit = map(data, 
+        ~FUN(.x$value_2, .x$value_1, paired = TRUE, conf.int = TRUE) %>%
+          tidy() %>%
+          add_column(n = nrow(.x)))
+    ) %>%
     unnest(fit) %>%
-    select(set,  mean_dif = estimate, conf.low, conf.high, stat = statistic, p.value)
+    select(set,  n, mean_dif = estimate, conf.low, conf.high, stat = statistic, p.value)
 }
 ```
 
