@@ -2,7 +2,7 @@
 
 Collaborators: Paul Birch, Haixia Wang
 
-The code to perform minor statistical analysis for Wang et al. (2023), accepted by The Plant cell.
+The code to perform minor statistical analysis for Wang et al. "Uptake of oomycete RXLR effectors into host cells by clathrin-mediated endocystosis" (2023), accepted by The Plant cell.
 
 ## Instructions
 
